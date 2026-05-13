@@ -4,6 +4,7 @@
 **/tmp/
 **/output/
 artifacts/
+.build/
 
 # Visual Studio / Rider
 .vs/

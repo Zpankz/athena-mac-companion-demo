@@ -1,85 +1,142 @@
-using NAudio.Wave;
-using NAudio.Wave.SampleProviders;
+using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace AthenaCompanion.Music;
 
 internal sealed class MusicPlaybackEngine : IDisposable
 {
-    private WaveOutEvent? _output;
-    private AudioFileReader? _reader;
+    private Process? _process;
+    private string? _currentTrack;
+    private DateTimeOffset _startedAt;
+    private TimeSpan _pausedAt;
+    private bool _isPaused;
+    private bool _stopping;
 
     public event EventHandler? PlaybackStopped;
 
-    public bool HasTrack => _reader is not null;
-    public bool IsPlaying => _output?.PlaybackState == PlaybackState.Playing;
-    public bool IsPaused => _output?.PlaybackState == PlaybackState.Paused;
-    public TimeSpan Duration => _reader?.TotalTime ?? TimeSpan.Zero;
-    public TimeSpan Position => _reader?.CurrentTime ?? TimeSpan.Zero;
+    public bool HasTrack => _currentTrack is not null;
+    public bool IsPlaying => _process is { HasExited: false } && !_isPaused;
+    public bool IsPaused => _isPaused;
+    public TimeSpan Duration => TimeSpan.Zero;
+    public TimeSpan Position => IsPlaying ? DateTimeOffset.UtcNow - _startedAt : _pausedAt;
 
     public void Play(string filePath)
     {
         CloseCurrent();
-
-        _reader = new AudioFileReader(filePath);
-        var radio = new RadioEffectSampleProvider(_reader);
-        _output = new WaveOutEvent();
-        _output.PlaybackStopped += OnPlaybackStopped;
-        _output.Init(new SampleToWaveProvider16(radio));
-        _output.Play();
+        StartProcess(filePath);
+        _currentTrack = filePath;
+        _startedAt = DateTimeOffset.UtcNow;
+        _pausedAt = TimeSpan.Zero;
+        _isPaused = false;
     }
 
     public void Resume()
     {
-        if (_output?.PlaybackState == PlaybackState.Paused)
+        if (!_isPaused || string.IsNullOrWhiteSpace(_currentTrack))
         {
-            _output.Play();
+            return;
         }
+
+        StartProcess(_currentTrack);
+        _startedAt = DateTimeOffset.UtcNow - _pausedAt;
+        _isPaused = false;
     }
 
     public void Pause()
     {
-        if (_output?.PlaybackState == PlaybackState.Playing)
+        if (!IsPlaying)
         {
-            _output.Pause();
+            return;
         }
+
+        _pausedAt = Position;
+        StopProcess(suppressEvent: true);
+        _isPaused = true;
     }
 
     public void Stop() => CloseCurrent();
 
     public void Seek(TimeSpan position)
     {
-        if (_reader is null)
+        // The native macOS afplay bridge does not expose precise seeking.
+        _pausedAt = position < TimeSpan.Zero ? TimeSpan.Zero : position;
+    }
+
+    public void Close() => CloseCurrent();
+
+    public void Dispose() => CloseCurrent();
+
+    private void StartProcess(string filePath)
+    {
+        if (!File.Exists(filePath))
+        {
+            throw new FileNotFoundException("Music file not found.", filePath);
+        }
+
+        var startInfo = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+            ? new ProcessStartInfo("/usr/bin/afplay", QuoteArgument(filePath)) { UseShellExecute = false }
+            : new ProcessStartInfo(filePath) { UseShellExecute = true };
+
+        var process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("Unable to start native audio playback.");
+        process.EnableRaisingEvents = true;
+        process.Exited += OnProcessExited;
+        _process = process;
+    }
+
+    private void CloseCurrent()
+    {
+        StopProcess(suppressEvent: true);
+        _currentTrack = null;
+        _pausedAt = TimeSpan.Zero;
+        _isPaused = false;
+    }
+
+    private void StopProcess(bool suppressEvent)
+    {
+        var process = _process;
+        if (process is null)
         {
             return;
         }
 
-        if (position < TimeSpan.Zero)
+        _process = null;
+        process.Exited -= OnProcessExited;
+        _stopping = suppressEvent;
+        try
         {
-            position = TimeSpan.Zero;
+            if (!process.HasExited)
+            {
+                process.Kill(entireProcessTree: true);
+            }
         }
-        else if (position > _reader.TotalTime)
+        catch
         {
-            position = _reader.TotalTime;
+            // Best effort while closing a native player process.
         }
-
-        _reader.CurrentTime = position;
+        finally
+        {
+            process.Dispose();
+            _stopping = false;
+        }
     }
 
-    public void Dispose() => CloseCurrent();
-
-    private void CloseCurrent()
+    private void OnProcessExited(object? sender, EventArgs e)
     {
-        if (_output is not null)
+        if (sender is Process process)
         {
-            _output.PlaybackStopped -= OnPlaybackStopped;
-            _output.Stop();
-            _output.Dispose();
-            _output = null;
+            process.Exited -= OnProcessExited;
+            process.Dispose();
         }
 
-        _reader?.Dispose();
-        _reader = null;
+        _process = null;
+        _isPaused = false;
+        _pausedAt = TimeSpan.Zero;
+        if (!_stopping)
+        {
+            PlaybackStopped?.Invoke(this, EventArgs.Empty);
+        }
     }
 
-    private void OnPlaybackStopped(object? sender, StoppedEventArgs e) => PlaybackStopped?.Invoke(this, EventArgs.Empty);
+    private static string QuoteArgument(string value) => "\"" + value.Replace("\"", "\\\"", StringComparison.Ordinal) + "\"";
 }

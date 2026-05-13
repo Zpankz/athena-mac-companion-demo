@@ -1,4 +1,4 @@
-using System.Windows.Media;
+using Avalonia.Media;
 
 namespace AthenaCompanion.UI;
 
@@ -35,7 +35,7 @@ internal sealed class WalkAnimationController
 
     public AnimationClip CurrentClip => _mode == BehaviorMode.Walk ? _atlas.WalkClip : _atlas.PoseClip;
 
-    public ImageSource CurrentFrame(double now) =>
+    public IImage CurrentFrame(double now) =>
         _atlas.GetFrame(CurrentClip, now - _modeStartedSeconds);
 
     public void SetTrackBounds(double minX, double maxX, bool resetPosition)

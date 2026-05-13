@@ -1,4 +1,11 @@
 using System.Diagnostics;
+using Avalonia;
+using Avalonia.Controls;
+using Avalonia.Input;
+using Avalonia.Layout;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
+using Avalonia.Threading;
 using AthenaCompanion.Music;
 using AthenaCompanion.Security;
 using AthenaCompanion.Settings;
@@ -7,15 +14,10 @@ using AthenaCompanion.Tools;
 using AthenaCompanion.UI;
 using AthenaCompanion.UI.Interop;
 using AthenaCompanion.Voice;
-using Microsoft.Win32;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Threading;
-using WinForms = System.Windows.Forms;
 
 namespace AthenaCompanion;
 
-public partial class MainWindow : Window
+public sealed class MainWindow : Window
 {
     private readonly DispatcherTimer _timer = new() { Interval = TimeSpan.FromMilliseconds(16) };
     private readonly Stopwatch _clock = new();
@@ -25,6 +27,15 @@ public partial class MainWindow : Window
     private readonly AmbientSoundPlayer _ambientSoundPlayer;
     private readonly WalkAnimationController _walk = new(SpriteAtlas.Load());
     private readonly TrayMenuController _tray;
+    private readonly Border _textModeBubble;
+    private readonly TextBlock _textModeBubbleText;
+    private readonly Border _voiceModeBubble;
+    private readonly Button _puppyButton;
+    private readonly Image _puppyIconImage;
+    private readonly Border _voiceBusyIndicator;
+    private readonly TextBlock _voiceBusyText;
+    private readonly TextBlock _voiceBusyDots;
+    private readonly Image _spriteImage;
 
     private double _lastSeconds;
     private int _thoughtVariantIndex = -1;
@@ -39,6 +50,10 @@ public partial class MainWindow : Window
     private DogWindow? _dogWindow;
 
     private bool IsInteractionPaused => _interactionMode != AthenaInteractionMode.None;
+    private double WindowLeft => Position.X;
+    private double WindowTop => Position.Y;
+    private double WindowWidth => Bounds.Width > 0 ? Bounds.Width : Width;
+    private double WindowHeight => Bounds.Height > 0 ? Bounds.Height : Height;
 
     public MainWindow()
     {
@@ -60,32 +75,56 @@ public partial class MainWindow : Window
         _tray.OnboardingRequested += OnOnboardingRequested;
         _tray.ExitRequested += (_, _) => Close();
 
-        InitializeComponent();
-        Icon = IconLoader.LoadWindowIcon();
-        _ambientSoundPlayer = AmbientSoundPlayer.Load(AppContext.BaseDirectory);
+        (_textModeBubble, _textModeBubbleText) = BuildTextBubble();
+        _textModeBubble.PointerReleased += OnTextModeBubblePointerReleased;
+        _voiceModeBubble = BuildVoiceBubble();
+        (_puppyButton, _puppyIconImage) = BuildPuppyButton();
+        (_voiceBusyIndicator, _voiceBusyText, _voiceBusyDots) = BuildBusyIndicator();
+        _spriteImage = new Image
+        {
+            Width = 160,
+            Height = 144,
+            ZIndex = 1,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Bottom,
+            RenderTransformOrigin = new RelativePoint(0.5, 0.5, RelativeUnit.Relative),
+            Stretch = Stretch.Uniform
+        };
 
+        Title = "Athena Companion";
+        Width = 190;
+        Height = 176;
+        Background = Brushes.Transparent;
+        CanResize = false;
+        ShowInTaskbar = false;
+        Topmost = true;
+        SystemDecorations = SystemDecorations.None;
+        TransparencyLevelHint = [WindowTransparencyLevel.Transparent];
+        Icon = IconLoader.LoadWindowIcon();
+        Content = BuildContent();
+
+        _ambientSoundPlayer = AmbientSoundPlayer.Load(AppContext.BaseDirectory);
         _timer.Tick += OnTick;
         _voiceController.StatusChanged += OnVoiceStatusChanged;
         _voiceController.Error += OnVoiceError;
-        SystemEvents.DisplaySettingsChanged += OnDisplaySettingsChanged;
         UpdateInteractionVisuals();
     }
 
-    private void OnLoaded(object sender, RoutedEventArgs e)
+    protected override void OnOpened(EventArgs e)
     {
+        base.OnOpened(e);
         _tray.Initialize();
         RefreshTrackBounds(resetPosition: true);
         _clock.Start();
         _lastSeconds = _clock.Elapsed.TotalSeconds;
         UpdateAmbientSoundState();
         _timer.Start();
-        ShowFirstRunOnboardingIfNeeded();
+        _ = ShowFirstRunOnboardingIfNeededAsync();
     }
 
-    private void OnClosed(object? sender, EventArgs e)
+    protected override void OnClosed(EventArgs e)
     {
         _timer.Stop();
-        SystemEvents.DisplaySettingsChanged -= OnDisplaySettingsChanged;
         _voiceController.StatusChanged -= OnVoiceStatusChanged;
         _voiceController.Error -= OnVoiceError;
         _ = _voiceController.DisposeAsync();
@@ -94,21 +133,163 @@ public partial class MainWindow : Window
         CloseDogWindow();
         _ambientSoundPlayer.Dispose();
         _tray.Dispose();
+        base.OnClosed(e);
     }
 
-    private void OnMouseRightButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private Grid BuildContent()
     {
-        _tray.ShowContextMenu(WinForms.Cursor.Position);
+        var root = new Grid
+        {
+            Background = Brushes.Transparent
+        };
+        root.PointerReleased += OnWindowPointerReleased;
+        root.Children.Add(_textModeBubble);
+        root.Children.Add(_voiceModeBubble);
+        root.Children.Add(_puppyButton);
+        root.Children.Add(_voiceBusyIndicator);
+        root.Children.Add(_spriteImage);
+        return root;
     }
 
-    private void OnMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private static (Border Bubble, TextBlock Text) BuildTextBubble()
     {
-        if (_clickThrough)
+        var text = new TextBlock
+        {
+            Text = "Hmm ...",
+            Foreground = Brush("#F7F1FF"),
+            FontSize = 12,
+            FontWeight = FontWeight.SemiBold
+        };
+        var bubble = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            ZIndex = 2,
+            Margin = new Thickness(0, 10, 55, 0),
+            Padding = new Thickness(10, 5),
+            Background = Brush("#E8262233"),
+            BorderBrush = Brush("#B8D9CCFF"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Child = text
+        };
+        ToolTip.SetTip(bubble, "Open text chat");
+        return (bubble, text);
+    }
+
+    private Border BuildVoiceBubble()
+    {
+        var text = new TextBlock
+        {
+            Text = "Mic",
+            Foreground = Brush("#F7F1FF"),
+            FontSize = 13,
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        var bubble = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Left,
+            VerticalAlignment = VerticalAlignment.Top,
+            ZIndex = 2,
+            Margin = new Thickness(18, 24, 0, 0),
+            Padding = new Thickness(8, 5),
+            Background = Brush("#E8262233"),
+            BorderBrush = Brush("#B8D9CCFF"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(10),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Child = text
+        };
+        bubble.PointerReleased += OnVoiceModeBubblePointerReleased;
+        ToolTip.SetTip(bubble, "Enter voice chat");
+        return bubble;
+    }
+
+    private (Button Button, Image Image) BuildPuppyButton()
+    {
+        var image = new Image
+        {
+            Source = LoadBitmap(Path.Combine(AppContext.BaseDirectory, "Assets", "Icons", "puppy-icon.png")),
+            Stretch = Stretch.Uniform
+        };
+        var button = new Button
+        {
+            HorizontalAlignment = HorizontalAlignment.Right,
+            VerticalAlignment = VerticalAlignment.Top,
+            ZIndex = 2,
+            Margin = new Thickness(0, 23, 18, 0),
+            Width = 31,
+            Height = 31,
+            Padding = new Thickness(4),
+            Background = Brush("#D8241F2F"),
+            BorderBrush = Brush("#B8FFF0B8"),
+            BorderThickness = new Thickness(1),
+            Cursor = new Cursor(StandardCursorType.Hand),
+            Content = image
+        };
+        button.Click += OnPuppyButtonClick;
+        ToolTip.SetTip(button, "Spawn puppy");
+        return (button, image);
+    }
+
+    private static (Border Border, TextBlock Text, TextBlock Dots) BuildBusyIndicator()
+    {
+        var text = new TextBlock
+        {
+            Foreground = Brush("#F7F1FF"),
+            FontSize = 11,
+            FontWeight = FontWeight.SemiBold,
+            Text = "Thinking"
+        };
+        var dots = new TextBlock
+        {
+            Width = 16,
+            Foreground = Brush("#F7F1FF"),
+            FontSize = 11,
+            FontWeight = FontWeight.SemiBold,
+            Text = "..."
+        };
+        var border = new Border
+        {
+            HorizontalAlignment = HorizontalAlignment.Center,
+            VerticalAlignment = VerticalAlignment.Top,
+            ZIndex = 3,
+            Margin = new Thickness(0, 4, 0, 0),
+            Padding = new Thickness(8, 3),
+            Background = Brush("#E8201D2B"),
+            BorderBrush = Brush("#A8D9CCFF"),
+            BorderThickness = new Thickness(1),
+            CornerRadius = new CornerRadius(8),
+            IsHitTestVisible = false,
+            IsVisible = false,
+            Child = new StackPanel
+            {
+                Orientation = Orientation.Horizontal,
+                Children = { text, dots }
+            }
+        };
+        return (border, text, dots);
+    }
+
+    private void OnWindowPointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (e.InitialPressMouseButton == MouseButton.Right)
+        {
+            _tray.ShowContextMenu((Control)sender!);
+            e.Handled = true;
+            return;
+        }
+
+        if (e.InitialPressMouseButton != MouseButton.Left || _clickThrough)
         {
             return;
         }
 
-        if (IsModeBubbleClick(e.OriginalSource))
+        if (ReferenceEquals(e.Source, _textModeBubble) || IsWithin(_textModeBubble, e.Source as Control) ||
+            ReferenceEquals(e.Source, _voiceModeBubble) || IsWithin(_voiceModeBubble, e.Source as Control) ||
+            ReferenceEquals(e.Source, _puppyButton) || IsWithin(_puppyButton, e.Source as Control))
         {
             e.Handled = true;
             return;
@@ -118,20 +299,9 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    private void OnTextModeBubbleMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    private void OnVoiceModeBubblePointerReleased(object? sender, PointerReleasedEventArgs e)
     {
-        if (_clickThrough)
-        {
-            return;
-        }
-
-        ToggleTextMode();
-        e.Handled = true;
-    }
-
-    private void OnVoiceModeBubbleMouseLeftButtonUp(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
-        if (_clickThrough)
+        if (_clickThrough || e.InitialPressMouseButton != MouseButton.Left)
         {
             return;
         }
@@ -140,7 +310,18 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    private void OnPuppyButtonClick(object sender, RoutedEventArgs e)
+    private void OnTextModeBubblePointerReleased(object? sender, PointerReleasedEventArgs e)
+    {
+        if (_clickThrough || e.InitialPressMouseButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        ToggleTextMode();
+        e.Handled = true;
+    }
+
+    private void OnPuppyButtonClick(object? sender, Avalonia.Interactivity.RoutedEventArgs e)
     {
         if (_clickThrough)
         {
@@ -151,30 +332,17 @@ public partial class MainWindow : Window
         e.Handled = true;
     }
 
-    private bool IsModeBubbleClick(object? source) =>
-        IsDescendantOf(TextModeBubble, source) ||
-        IsDescendantOf(VoiceModeBubble, source) ||
-        IsDescendantOf(PuppyButton, source);
-
-    private static bool IsDescendantOf(DependencyObject parent, object? source)
+    private static bool IsWithin(Control parent, Control? source)
     {
-        var current = source as DependencyObject;
-        while (current is not null)
+        for (var current = source; current is not null; current = current.Parent as Control)
         {
             if (ReferenceEquals(current, parent))
             {
                 return true;
             }
-
-            current = VisualTreeHelper.GetParent(current);
         }
 
         return false;
-    }
-
-    private void OnDisplaySettingsChanged(object? sender, EventArgs e)
-    {
-        Dispatcher.Invoke(() => RefreshTrackBounds(resetPosition: false));
     }
 
     private void OnTick(object? sender, EventArgs e)
@@ -185,11 +353,11 @@ public partial class MainWindow : Window
 
         _walk.Tick(now, dt, IsInteractionPaused);
 
-        Left = _walk.X;
-        SpriteImage.Source = _walk.CurrentFrame(now);
-        SpriteImage.RenderTransform = _walk.Direction < 0
+        SetWindowPosition(_walk.X, WindowTop);
+        _spriteImage.Source = _walk.CurrentFrame(now);
+        _spriteImage.RenderTransform = _walk.Direction < 0
             ? new ScaleTransform(-1, 1)
-            : Transform.Identity;
+            : null;
         UpdateDog(now, dt);
         UpdateWalkingThoughtText(now);
         UpdateBusyIndicatorAnimation(now);
@@ -197,11 +365,14 @@ public partial class MainWindow : Window
 
     private void RefreshTrackBounds(bool resetPosition)
     {
-        var bounds = MonitorGeometry.GetTrackBounds(this, ActualWidth, ActualHeight, sidePadding: 8, bottomOffset: 3);
-        Top = bounds.Top;
+        var bounds = MonitorGeometry.GetTrackBounds(this, WindowWidth, WindowHeight, sidePadding: 8, bottomOffset: 3);
+        SetWindowPosition(WindowLeft, bounds.Top);
         _walk.SetTrackBounds(bounds.MinX, bounds.MaxX, resetPosition);
-        Left = _walk.X;
+        SetWindowPosition(_walk.X, bounds.Top);
     }
+
+    private void SetWindowPosition(double left, double top) =>
+        Position = new PixelPoint((int)Math.Round(left), (int)Math.Round(top));
 
     private void TogglePause()
     {
@@ -256,7 +427,7 @@ public partial class MainWindow : Window
         StartVoiceMode();
     }
 
-    private void EnterTextMode()
+    private async void EnterTextMode()
     {
         StopVoiceMode();
         CloseMusicPlayerWindow();
@@ -265,7 +436,7 @@ public partial class MainWindow : Window
         UpdateBusyIndicatorState("Text ready");
         UpdateInteractionVisuals();
         UpdateAmbientSoundState();
-        OpenTextChatWindow();
+        await OpenTextChatWindowAsync();
     }
 
     private void EnterMusicMode(MusicPlayerRequest request)
@@ -322,9 +493,9 @@ public partial class MainWindow : Window
         _tray.Refresh();
     }
 
-    private void OnConfigureApiKeyRequested(object? sender, EventArgs e)
+    private async void OnConfigureApiKeyRequested(object? sender, EventArgs e)
     {
-        _voiceController.ConfigureApiKey(this);
+        await _voiceController.ConfigureApiKeyAsync(this);
         _tray.Refresh();
     }
 
@@ -357,13 +528,10 @@ public partial class MainWindow : Window
         }
 
         _dogController = new DogCompanionController();
-        var dogWindow = new DogWindow
-        {
-            Owner = this
-        };
+        var dogWindow = new DogWindow();
         dogWindow.Closed += OnDogWindowClosed;
         _dogWindow = dogWindow;
-        dogWindow.Show();
+        dogWindow.Show(this);
         UpdateDog(_clock.Elapsed.TotalSeconds, dt: 0);
     }
 
@@ -403,10 +571,10 @@ public partial class MainWindow : Window
 
         var workingArea = MonitorGeometry.GetPrimaryWorkingAreaDip(this);
         var frame = new DogCompanionFrame(
-            Left,
-            Top,
-            ActualWidth > 0 ? ActualWidth : Width,
-            ActualHeight > 0 ? ActualHeight : Height,
+            WindowLeft,
+            WindowTop,
+            WindowWidth,
+            WindowHeight,
             workingArea.Left,
             workingArea.Right,
             _dogWindow.Width,
@@ -415,21 +583,15 @@ public partial class MainWindow : Window
         _dogWindow.Render(snapshot, now);
     }
 
-    private void OnOnboardingRequested(object? sender, EventArgs e) => ShowOnboarding(markCompleted: false);
+    private void OnOnboardingRequested(object? sender, EventArgs e) => _ = ShowOnboardingAsync(markCompleted: false);
 
-    private async void StartVoiceMode()
-    {
-        await _voiceController.StartAsync(this);
-    }
+    private async void StartVoiceMode() => await _voiceController.StartAsync(this);
 
-    private async void StopVoiceMode()
-    {
-        await _voiceController.StopAsync();
-    }
+    private async void StopVoiceMode() => await _voiceController.StopAsync();
 
     private void OnVoiceStatusChanged(object? sender, string status)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             _voiceStatus = status;
             if (_interactionMode is not AthenaInteractionMode.Text and not AthenaInteractionMode.Music)
@@ -443,7 +605,7 @@ public partial class MainWindow : Window
 
     private void OnVoiceError(object? sender, string error)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             _voiceStatus = "Voice error";
             if (_interactionMode == AthenaInteractionMode.Voice)
@@ -458,16 +620,13 @@ public partial class MainWindow : Window
 
     private void ShowGeneratedImage(string imagePath)
     {
-        var lightbox = new ImageLightboxWindow(imagePath)
-        {
-            Owner = this
-        };
+        var lightbox = new ImageLightboxWindow(imagePath);
 
-        lightbox.Show();
+        lightbox.Show(this);
         lightbox.Activate();
     }
 
-    private void OpenTextChatWindow()
+    private async Task OpenTextChatWindowAsync()
     {
         if (_textChatWindow is not null)
         {
@@ -475,7 +634,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var apiKey = GetOrPromptOpenAiKey();
+        var apiKey = await GetOrPromptOpenAiKeyAsync();
         if (string.IsNullOrWhiteSpace(apiKey))
         {
             ResumeWalking();
@@ -485,19 +644,16 @@ public partial class MainWindow : Window
         var tools = new AthenaToolExecutor(
             () => apiKey,
             ShowGeneratedImage,
-            status => Dispatcher.Invoke(() => UpdateBusyIndicatorState(status)),
+            status => Dispatcher.UIThread.Post(() => UpdateBusyIndicatorState(status)),
             OpenMusicPlayerFromTool);
         var session = new AthenaTextChatSession(apiKey, tools);
-        var chatWindow = new TextChatWindow(session)
-        {
-            Owner = this
-        };
+        var chatWindow = new TextChatWindow(session);
 
         chatWindow.StatusChanged += OnTextChatStatusChanged;
         chatWindow.Closed += OnTextChatClosed;
         PositionChildWindow(chatWindow);
         _textChatWindow = chatWindow;
-        chatWindow.Show();
+        chatWindow.Show(this);
         chatWindow.Activate();
     }
 
@@ -526,15 +682,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        var musicWindow = new MusicPlayerWindow(_settings.MusicDirectory)
-        {
-            Owner = this
-        };
+        var musicWindow = new MusicPlayerWindow(_settings.MusicDirectory);
 
         musicWindow.Closed += OnMusicPlayerClosed;
         PositionChildWindow(musicWindow);
         _musicPlayerWindow = musicWindow;
-        musicWindow.Show();
+        musicWindow.Show(this);
         musicWindow.ApplyRequest(request);
         musicWindow.Activate();
     }
@@ -552,7 +705,7 @@ public partial class MainWindow : Window
         musicWindow.Close();
     }
 
-    private string? GetOrPromptOpenAiKey()
+    private async Task<string?> GetOrPromptOpenAiKeyAsync()
     {
         var lookup = _keyProvider.TryGetApiKey();
         if (!string.IsNullOrWhiteSpace(lookup.ApiKey))
@@ -560,8 +713,8 @@ public partial class MainWindow : Window
             return lookup.ApiKey;
         }
 
-        var dialog = new ApiKeySetupWindow { Owner = this };
-        if (dialog.ShowDialog() != true)
+        var dialog = new ApiKeySetupWindow();
+        if (await dialog.ShowDialog<bool?>(this) != true)
         {
             return null;
         }
@@ -571,17 +724,17 @@ public partial class MainWindow : Window
         return dialog.ApiKey;
     }
 
-    private void ShowFirstRunOnboardingIfNeeded()
+    private async Task ShowFirstRunOnboardingIfNeededAsync()
     {
         if (_settings.HasCompletedOnboarding)
         {
             return;
         }
 
-        ShowOnboarding(markCompleted: true);
+        await ShowOnboardingAsync(markCompleted: true);
     }
 
-    private void ShowOnboarding(bool markCompleted)
+    private async Task ShowOnboardingAsync(bool markCompleted)
     {
         if (_onboardingWindow is not null)
         {
@@ -589,19 +742,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        var onboardingWindow = new OnboardingWindow(_settings.MusicDirectory, owner =>
+        var onboardingWindow = new OnboardingWindow(_settings.MusicDirectory, async owner =>
         {
-            _voiceController.ConfigureApiKey(owner);
+            await _voiceController.ConfigureApiKeyAsync(owner);
             _tray.Refresh();
-        })
-        {
-            Owner = this
-        };
+        });
 
         _onboardingWindow = onboardingWindow;
         try
         {
-            onboardingWindow.ShowDialog();
+            await onboardingWindow.ShowDialog<bool?>(this);
         }
         finally
         {
@@ -619,19 +769,20 @@ public partial class MainWindow : Window
     private void PositionChildWindow(Window childWindow)
     {
         var workingArea = MonitorGeometry.GetPrimaryWorkingAreaDip(this);
-        var left = Left + ActualWidth + 8;
+        var left = WindowLeft + WindowWidth + 8;
         if (left + childWindow.Width > workingArea.Right)
         {
-            left = Left - childWindow.Width - 8;
+            left = WindowLeft - childWindow.Width - 8;
         }
 
-        childWindow.Left = Math.Clamp(left, workingArea.Left + 8, workingArea.Right - childWindow.Width - 8);
-        childWindow.Top = Math.Clamp(Top - childWindow.Height + ActualHeight, workingArea.Top + 8, workingArea.Bottom - childWindow.Height - 8);
+        var top = Math.Clamp(WindowTop - childWindow.Height + WindowHeight, workingArea.Top + 8, workingArea.Bottom - childWindow.Height - 8);
+        left = Math.Clamp(left, workingArea.Left + 8, workingArea.Right - childWindow.Width - 8);
+        childWindow.Position = new PixelPoint((int)Math.Round(left), (int)Math.Round(top));
     }
 
     private void OnTextChatStatusChanged(object? sender, string status)
     {
-        Dispatcher.Invoke(() =>
+        Dispatcher.UIThread.Post(() =>
         {
             UpdateBusyIndicatorState(status);
             _tray.Refresh();
@@ -683,26 +834,20 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_busyIndicatorLabel))
         {
-            VoiceBusyIndicator.Visibility = Visibility.Collapsed;
+            _voiceBusyIndicator.IsVisible = false;
             return;
         }
 
-        VoiceBusyText.Text = _busyIndicatorLabel;
-        VoiceBusyIndicator.Visibility = Visibility.Visible;
+        _voiceBusyText.Text = _busyIndicatorLabel;
+        _voiceBusyIndicator.IsVisible = true;
     }
 
     private void UpdateInteractionVisuals()
     {
         var showWalkingBubbles = !_clickThrough && _interactionMode == AthenaInteractionMode.None;
-        TextModeBubble.Visibility = showWalkingBubbles
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        VoiceModeBubble.Visibility = showWalkingBubbles
-            ? Visibility.Visible
-            : Visibility.Collapsed;
-        PuppyButton.Visibility = showWalkingBubbles
-            ? Visibility.Visible
-            : Visibility.Collapsed;
+        _textModeBubble.IsVisible = showWalkingBubbles;
+        _voiceModeBubble.IsVisible = showWalkingBubbles;
+        _puppyButton.IsVisible = showWalkingBubbles;
 
         if (showWalkingBubbles)
         {
@@ -714,14 +859,9 @@ public partial class MainWindow : Window
 
     private void UpdatePuppyButtonVisual()
     {
-        if (PuppyButton is null)
-        {
-            return;
-        }
-
         var isSpawned = _dogWindow is not null;
-        PuppyButton.Opacity = isSpawned ? 1.0 : 0.82;
-        PuppyButton.ToolTip = isSpawned ? "Dismiss puppy" : "Spawn puppy";
+        _puppyButton.Opacity = isSpawned ? 1.0 : 0.82;
+        ToolTip.SetTip(_puppyButton, isSpawned ? "Dismiss puppy" : "Spawn puppy");
     }
 
     private void UpdateWalkingThoughtText(double now)
@@ -738,7 +878,7 @@ public partial class MainWindow : Window
         }
 
         _thoughtVariantIndex = variantIndex;
-        TextModeBubbleText.Text = WalkingThoughtText.Variants[variantIndex];
+        _textModeBubbleText.Text = WalkingThoughtText.Variants[variantIndex];
     }
 
     private void UpdateAmbientSoundState()
@@ -755,13 +895,17 @@ public partial class MainWindow : Window
 
     private void UpdateBusyIndicatorAnimation(double now)
     {
-        if (VoiceBusyIndicator.Visibility != Visibility.Visible)
+        if (!_voiceBusyIndicator.IsVisible)
         {
             return;
         }
 
         var dotCount = (int)(now * 2.6) % 4;
-        VoiceBusyDots.Text = new string('.', dotCount).PadRight(3);
-        VoiceBusyIndicator.Opacity = 0.82 + Math.Sin(now * 5.0) * 0.12;
+        _voiceBusyDots.Text = new string('.', dotCount).PadRight(3);
+        _voiceBusyIndicator.Opacity = 0.82 + Math.Sin(now * 5.0) * 0.12;
     }
+
+    private static IImage? LoadBitmap(string path) => File.Exists(path) ? new Bitmap(path) : null;
+
+    private static IBrush Brush(string value) => new SolidColorBrush(Color.Parse(value));
 }

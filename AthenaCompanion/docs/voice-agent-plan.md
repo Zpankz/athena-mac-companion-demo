@@ -6,7 +6,7 @@ Status: first local implementation in progress. Athena has separate pause modes 
 
 - Athena ships with no OpenAI API key.
 - First launch or first voice use asks the user for their own OpenAI API key.
-- Store the key in Windows Credential Manager, not in plain text files.
+- Store the key in macOS Keychain on macOS or Windows Credential Manager on Windows, not in plain text files.
 - Never log, echo, commit, or include the key in crash reports.
 - Local development may fall back to the `OPENAI_API_KEY` environment variable.
 - Voice is optional. If no key is configured, Athena still walks and poses normally.
@@ -72,13 +72,13 @@ In text pause mode, "pause" means Athena is available for typed chat, not microp
 
 ## OpenAI API Direction
 
-Initial implementation should use the OpenAI Realtime API over WebSocket from the WPF app.
+Initial implementation should use the OpenAI Realtime API over WebSocket from the Avalonia app.
 
 - Model: `gpt-realtime-2`
 - Endpoint shape: `wss://api.openai.com/v1/realtime?model=gpt-realtime-2`
 - Reasoning effort: `low`
 - Default voice: `alloy`
-- Built-in voices exposed in the tray menu: `marin`, `cedar`, `coral`, `shimmer`, `verse`, `sage`, `alloy`, `ash`, `ballad`, `echo`
+- Built-in voices exposed in the menu: `marin`, `cedar`, `coral`, `shimmer`, `verse`, `sage`, `alloy`, `ash`, `ballad`, `echo`
 - Tool routing:
   - Realtime function tools: `inspect_screen`, `create_screen_image`
   - Screen understanding: `gpt-5.5` through the Responses API with a screenshot input
@@ -93,7 +93,7 @@ Initial implementation should use the OpenAI Realtime API over WebSocket from th
   - Directory: user Music folder under `Athena Companion`, with AppData fallback
   - Voice handoff: visual-only; no spoken follow-up over music
 - Auth source:
-  1. Windows Credential Manager
+  1. macOS Keychain or Windows Credential Manager
   2. `OPENAI_API_KEY` environment variable for local development
   3. Setup dialog if neither exists
 
@@ -105,7 +105,7 @@ Use a short, structured Realtime prompt. Keep it direct because realtime models 
 
 ```text
 # Role
-- You are Athena, a graceful Windows desktop companion.
+- You are Athena, a graceful macOS desktop companion.
 - You are warm, playful, elegant, and concise.
 - You are never explicit or crude.
 
@@ -154,7 +154,7 @@ AthenaCompanion/
     AthenaTextPrompt.cs
   Security/
     IOpenAiKeyStore.cs
-    WindowsCredentialOpenAiKeyStore.cs
+    OpenAiKeyProvider.cs
     EnvironmentOpenAiKeyProvider.cs
   Settings/
     ApiKeySetupWindow.xaml
@@ -174,7 +174,7 @@ Responsibilities:
 - `AthenaRealtimeSession`: owns WebSocket connection, Realtime session setup, event send/receive, reconnect policy, and response cancellation.
 - `AthenaAudioInput`: captures microphone audio and streams it to the session.
 - `AthenaAudioOutput`: buffers and plays model audio responses.
-- `WindowsCredentialOpenAiKeyStore`: reads, writes, and deletes the user's API key from Windows Credential Manager.
+- `OpenAiKeyProvider`: reads, writes, and deletes the user's API key from macOS Keychain or Windows Credential Manager, with `OPENAI_API_KEY` as a development override.
 - `ApiKeySetupWindow`: collects and validates the user's key without persisting it until validation succeeds.
 - `AthenaSettings`: stores non-secret user preferences such as selected voice under AppData.
 - `AthenaToolExecutor`: executes local screen tools requested by voice or text mode.
@@ -203,7 +203,7 @@ Responsibilities:
    - Log only event types and non-sensitive diagnostics.
 
 4. **Microphone capture** - done
-   - Add an audio library such as NAudio.
+   - Add a native CoreAudio microphone/PCM output backend for macOS.
    - Capture mono PCM audio from the default microphone.
    - Stream audio chunks only while paused.
    - Stop capture on resume, exit, or click-through toggle if needed.
@@ -218,7 +218,7 @@ Responsibilities:
    - Add Realtime function declarations for screen inspection and screen image creation.
    - Execute local screen capture only when a function call arrives.
    - Send function results back to Realtime and ask Athena to speak the result.
-   - Open generated images in a WPF lightbox.
+   - Open generated images in an Avalonia lightbox.
 
 7. **Text chat mode** - done
    - Add a clickable `Chat` bubble in walking mode.

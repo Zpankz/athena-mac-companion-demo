@@ -2,7 +2,6 @@ using System.Text.Json;
 using AthenaCompanion.Music;
 using AthenaCompanion.Settings;
 using AthenaCompanion.Tools;
-using NAudio.Wave;
 
 namespace AthenaCompanion.Tests;
 
@@ -219,8 +218,8 @@ public sealed class RadioEffectSampleProviderTests
 
         var read = provider.Read(buffer, 0, buffer.Length);
 
-        Assert.Equal(1, provider.WaveFormat.Channels);
-        Assert.Equal(RadioEffectSampleProvider.OutputSampleRate, provider.WaveFormat.SampleRate);
+        Assert.Equal(1, provider.Format.Channels);
+        Assert.Equal(RadioEffectSampleProvider.OutputSampleRate, provider.Format.SampleRate);
         Assert.True(read > 0);
         Assert.All(buffer.Take(read), sample => Assert.InRange(sample, -1f, 1f));
     }
@@ -240,16 +239,16 @@ public sealed class RadioEffectSampleProviderTests
         Assert.Equal(firstBuffer.Take(firstRead), secondBuffer.Take(secondRead));
     }
 
-    private sealed class TestSampleProvider : ISampleProvider
+    private sealed class TestSampleProvider : IFloatSampleProvider
     {
         private int _position;
 
         public TestSampleProvider(int sampleRate, int channels)
         {
-            WaveFormat = WaveFormat.CreateIeeeFloatWaveFormat(sampleRate, channels);
+            Format = new AudioSampleFormat(sampleRate, channels);
         }
 
-        public WaveFormat WaveFormat { get; }
+        public AudioSampleFormat Format { get; }
 
         public int Read(float[] buffer, int offset, int count)
         {

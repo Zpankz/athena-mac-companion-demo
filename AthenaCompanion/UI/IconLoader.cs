@@ -1,47 +1,25 @@
-using System.IO;
-using System.Windows;
-using System.Windows.Interop;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
+using Avalonia.Controls;
 
 namespace AthenaCompanion.UI;
 
 internal static class IconLoader
 {
-    public static System.Drawing.Icon? LoadTrayIcon()
+    public static WindowIcon? LoadWindowIcon()
     {
-        try
+        foreach (var relative in new[]
         {
-            var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "Icons", "athena.ico");
+            Path.Combine("Assets", "Icons", "athena-icon.png"),
+            Path.Combine("Assets", "Icons", "puppy-icon.png"),
+            Path.Combine("Assets", "Icons", "athena.ico")
+        })
+        {
+            var iconPath = Path.Combine(AppContext.BaseDirectory, relative);
             if (File.Exists(iconPath))
             {
-                return new System.Drawing.Icon(iconPath);
+                return new WindowIcon(iconPath);
             }
-
-            var processPath = Environment.ProcessPath;
-            return string.IsNullOrWhiteSpace(processPath)
-                ? null
-                : System.Drawing.Icon.ExtractAssociatedIcon(processPath);
-        }
-        catch
-        {
-            return null;
-        }
-    }
-
-    public static ImageSource? LoadWindowIcon()
-    {
-        using var icon = LoadTrayIcon();
-        if (icon is null)
-        {
-            return null;
         }
 
-        var source = Imaging.CreateBitmapSourceFromHIcon(
-            icon.Handle,
-            Int32Rect.Empty,
-            BitmapSizeOptions.FromEmptyOptions());
-        source.Freeze();
-        return source;
+        return null;
     }
 }

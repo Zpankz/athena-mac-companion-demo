@@ -4,5 +4,6 @@ internal enum OpenAiKeySource
 {
     None,
     WindowsCredentialManager,
+    MacOSKeychain,
     EnvironmentVariable
 }

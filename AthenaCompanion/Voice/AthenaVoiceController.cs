@@ -1,4 +1,4 @@
-using System.Windows;
+using Avalonia.Controls;
 using AthenaCompanion.Security;
 using AthenaCompanion.Settings;
 using AthenaCompanion.Music;
@@ -41,7 +41,7 @@ internal sealed class AthenaVoiceController : IAsyncDisposable
             var apiKey = lookup.ApiKey;
             if (string.IsNullOrWhiteSpace(apiKey))
             {
-                apiKey = PromptForApiKey(owner);
+                apiKey = await PromptForApiKeyAsync(owner);
             }
 
             if (string.IsNullOrWhiteSpace(apiKey))
@@ -93,9 +93,9 @@ internal sealed class AthenaVoiceController : IAsyncDisposable
         StatusChanged?.Invoke(this, "Voice off");
     }
 
-    public bool ConfigureApiKey(Window owner)
+    public async Task<bool> ConfigureApiKeyAsync(Window owner)
     {
-        var key = PromptForApiKey(owner);
+        var key = await PromptForApiKeyAsync(owner);
         return !string.IsNullOrWhiteSpace(key);
     }
 
@@ -111,6 +111,7 @@ internal sealed class AthenaVoiceController : IAsyncDisposable
         return lookup.Source switch
         {
             OpenAiKeySource.WindowsCredentialManager => "Credential Manager",
+            OpenAiKeySource.MacOSKeychain => "macOS Keychain",
             OpenAiKeySource.EnvironmentVariable => "OPENAI_API_KEY",
             _ => "Not configured"
         };
@@ -118,10 +119,10 @@ internal sealed class AthenaVoiceController : IAsyncDisposable
 
     public async ValueTask DisposeAsync() => await StopAsync();
 
-    private string? PromptForApiKey(Window owner)
+    private async Task<string?> PromptForApiKeyAsync(Window owner)
     {
-        var dialog = new ApiKeySetupWindow { Owner = owner };
-        if (dialog.ShowDialog() != true)
+        var dialog = new ApiKeySetupWindow();
+        if (await dialog.ShowDialog<bool?>(owner) != true)
         {
             return null;
         }

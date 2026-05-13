@@ -1,12 +1,8 @@
 using System.IO;
 using System.Text.Json;
-using System.Windows;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using Brushes = System.Windows.Media.Brushes;
-using Color = System.Windows.Media.Color;
-using Pen = System.Windows.Media.Pen;
-using Point = System.Windows.Point;
+using Avalonia;
+using Avalonia.Media;
+using Avalonia.Media.Imaging;
 
 namespace AthenaCompanion;
 
@@ -42,10 +38,10 @@ internal static class WalkingThoughtText
 internal sealed class AmbientSoundPlayer : IDisposable
 {
     private const string AmbientSoundFileName = "on-a-day-like-today.mp3";
-    private readonly MediaPlayer? _player;
+    private readonly Music.MusicPlaybackEngine? _player;
     private bool _shouldPlay;
 
-    private AmbientSoundPlayer(MediaPlayer? player)
+    private AmbientSoundPlayer(Music.MusicPlaybackEngine? player)
     {
         _player = player;
     }
@@ -60,14 +56,10 @@ internal sealed class AmbientSoundPlayer : IDisposable
 
         try
         {
-            var player = new MediaPlayer
-            {
-                Volume = 0.16
-            };
+            var player = new Music.MusicPlaybackEngine();
             var sound = new AmbientSoundPlayer(player);
-            player.MediaEnded += sound.OnMediaEnded;
-            player.MediaFailed += sound.OnMediaFailed;
-            player.Open(new Uri(path, UriKind.Absolute));
+            player.PlaybackStopped += sound.OnPlaybackStopped;
+            sound._ambientPath = path;
             return sound;
         }
         catch
@@ -86,7 +78,10 @@ internal sealed class AmbientSoundPlayer : IDisposable
         _shouldPlay = true;
         try
         {
-            _player.Play();
+            if (!string.IsNullOrWhiteSpace(_ambientPath))
+            {
+                _player.Play(_ambientPath);
+            }
         }
         catch
         {
@@ -115,25 +110,20 @@ internal sealed class AmbientSoundPlayer : IDisposable
         }
 
         _shouldPlay = false;
-        _player.MediaEnded -= OnMediaEnded;
-        _player.MediaFailed -= OnMediaFailed;
+        _player.PlaybackStopped -= OnPlaybackStopped;
         _player.Close();
     }
 
-    private void OnMediaEnded(object? sender, EventArgs e)
+    private string? _ambientPath;
+
+    private void OnPlaybackStopped(object? sender, EventArgs e)
     {
         if (_player is null || !_shouldPlay)
         {
             return;
         }
 
-        _player.Position = TimeSpan.Zero;
-        _player.Play();
-    }
-
-    private void OnMediaFailed(object? sender, ExceptionEventArgs e)
-    {
-        _shouldPlay = false;
+        Play();
     }
 }
 
@@ -141,9 +131,9 @@ internal sealed record AnimationClip(string Name, int StartFrame, int FrameCount
 
 internal sealed class SpriteAtlas
 {
-    private readonly IReadOnlyList<ImageSource> _frames;
+    private readonly IReadOnlyList<IImage> _frames;
 
-    private SpriteAtlas(IReadOnlyList<ImageSource> frames, SpriteAtlasManifest manifest)
+    private SpriteAtlas(IReadOnlyList<IImage> frames, SpriteAtlasManifest manifest)
     {
         _frames = frames;
         WalkClip = manifest.CreateWalkClip(_frames.Count);
@@ -167,15 +157,10 @@ internal sealed class SpriteAtlas
 
         if (File.Exists(atlasPath))
         {
-            var bitmap = new BitmapImage();
-            bitmap.BeginInit();
-            bitmap.CacheOption = BitmapCacheOption.OnLoad;
-            bitmap.UriSource = new Uri(atlasPath, UriKind.Absolute);
-            bitmap.EndInit();
-            bitmap.Freeze();
+            var bitmap = new Bitmap(atlasPath);
 
-            if (bitmap.PixelWidth >= manifest.Columns * manifest.FrameWidth &&
-                bitmap.PixelHeight >= manifest.Rows * manifest.FrameHeight)
+            if (bitmap.PixelSize.Width >= manifest.Columns * manifest.FrameWidth &&
+                bitmap.PixelSize.Height >= manifest.Rows * manifest.FrameHeight)
             {
                 return new SpriteAtlas(SliceAtlas(bitmap, manifest), manifest);
             }
@@ -184,7 +169,7 @@ internal sealed class SpriteAtlas
         return new SpriteAtlas(BuildFallbackFrames(manifest), manifest);
     }
 
-    public ImageSource GetFrame(AnimationClip clip, double clipSeconds)
+    public IImage GetFrame(AnimationClip clip, double clipSeconds)
     {
         if (_frames.Count == 0)
         {
@@ -194,20 +179,19 @@ internal sealed class SpriteAtlas
         return _frames[AnimationFrameSelector.SelectFrameIndex(clip, clipSeconds, _frames.Count)];
     }
 
-    private static IReadOnlyList<ImageSource> SliceAtlas(BitmapSource bitmap, SpriteAtlasManifest manifest)
+    private static IReadOnlyList<IImage> SliceAtlas(Bitmap bitmap, SpriteAtlasManifest manifest)
     {
-        var frames = new List<ImageSource>(manifest.Columns * manifest.Rows);
+        var frames = new List<IImage>(manifest.Columns * manifest.Rows);
 
         for (var row = 0; row < manifest.Rows; row++)
         {
             for (var column = 0; column < manifest.Columns; column++)
             {
-                var crop = new CroppedBitmap(bitmap, new Int32Rect(
+                var crop = new CroppedBitmap(bitmap, new PixelRect(
                     column * manifest.FrameWidth,
                     row * manifest.FrameHeight,
                     manifest.FrameWidth,
                     manifest.FrameHeight));
-                crop.Freeze();
                 frames.Add(crop);
             }
         }
@@ -215,9 +199,9 @@ internal sealed class SpriteAtlas
         return frames;
     }
 
-    private static IReadOnlyList<ImageSource> BuildFallbackFrames(SpriteAtlasManifest manifest)
+    private static IReadOnlyList<IImage> BuildFallbackFrames(SpriteAtlasManifest manifest)
     {
-        var frames = new List<ImageSource>(manifest.Columns * manifest.Rows);
+        var frames = new List<IImage>(manifest.Columns * manifest.Rows);
         for (var i = 0; i < manifest.Columns * manifest.Rows; i++)
         {
             frames.Add(RenderFallbackFrame(i));
@@ -226,17 +210,20 @@ internal sealed class SpriteAtlas
         return frames;
     }
 
-    private static ImageSource RenderFallbackFrame(int frame)
+    private static IImage RenderFallbackFrame(int frame)
     {
-        var visual = new DrawingVisual();
-        using (var drawing = visual.RenderOpen())
+        var bitmap = new RenderTargetBitmap(
+            new PixelSize(SpriteAtlasManifest.DefaultFrameWidth, SpriteAtlasManifest.DefaultFrameHeight),
+            new Vector(96, 96));
+
+        using (var drawing = bitmap.CreateDrawingContext())
         {
             var bob = Math.Sin(frame / 32.0 * Math.PI * 2) * 3;
             var step = Math.Sin(frame / 24.0 * Math.PI * 2) * 8;
 
-            drawing.DrawEllipse(new SolidColorBrush(Color.FromArgb(150, 30, 18, 52)), null, new Point(128, 222), 38, 7);
-            drawing.DrawEllipse(Brushes.MediumPurple, null, new Point(128, 82 + bob), 38, 52);
-            drawing.DrawEllipse(Brushes.LavenderBlush, null, new Point(128, 72 + bob), 24, 28);
+            drawing.DrawEllipse(new SolidColorBrush(Color.FromArgb(150, 30, 18, 52)), null, new Rect(90, 215, 76, 14));
+            drawing.DrawEllipse(Brushes.MediumPurple, null, new Rect(90, 30 + bob, 76, 104));
+            drawing.DrawEllipse(Brushes.LavenderBlush, null, new Rect(104, 44 + bob, 48, 56));
             drawing.DrawGeometry(Brushes.WhiteSmoke, new Pen(Brushes.Gainsboro, 2), BuildRobeGeometry(128, 126 + bob, step));
             drawing.DrawLine(new Pen(Brushes.WhiteSmoke, 9), new Point(106, 144 + bob), new Point(94 - step * 0.25, 198));
             drawing.DrawLine(new Pen(Brushes.WhiteSmoke, 9), new Point(150, 144 + bob), new Point(164 + step * 0.25, 198));
@@ -244,9 +231,6 @@ internal sealed class SpriteAtlas
             drawing.DrawLine(new Pen(Brushes.Plum, 5), new Point(145, 66 + bob), new Point(157, 75 + bob));
         }
 
-        var bitmap = new RenderTargetBitmap(SpriteAtlasManifest.DefaultFrameWidth, SpriteAtlasManifest.DefaultFrameHeight, 96, 96, PixelFormats.Pbgra32);
-        bitmap.Render(visual);
-        bitmap.Freeze();
         return bitmap;
     }
 
@@ -255,13 +239,13 @@ internal sealed class SpriteAtlas
         var geometry = new StreamGeometry();
         using (var context = geometry.Open())
         {
-            context.BeginFigure(new Point(x, y - 32), isFilled: true, isClosed: true);
-            context.LineTo(new Point(x - 46, y + 82), isStroked: true, isSmoothJoin: true);
-            context.QuadraticBezierTo(new Point(x - 18 - step * 0.2, y + 96), new Point(x, y + 86), isStroked: true, isSmoothJoin: true);
-            context.QuadraticBezierTo(new Point(x + 18 + step * 0.2, y + 96), new Point(x + 46, y + 82), isStroked: true, isSmoothJoin: true);
+            context.BeginFigure(new Point(x, y - 32), isFilled: true);
+            context.LineTo(new Point(x - 46, y + 82));
+            context.QuadraticBezierTo(new Point(x - 18 - step * 0.2, y + 96), new Point(x, y + 86));
+            context.QuadraticBezierTo(new Point(x + 18 + step * 0.2, y + 96), new Point(x + 46, y + 82));
+            context.EndFigure(isClosed: true);
         }
 
-        geometry.Freeze();
         return geometry;
     }
 }

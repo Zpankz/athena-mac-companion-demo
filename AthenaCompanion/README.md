@@ -1,12 +1,16 @@
 # Athena Companion
 
-Transparent WPF desktop companion window for Windows. Athena walks just above the primary taskbar, pauses for pose animation, can spawn a small puppy companion, and exposes a tray menu for pause, text chat, click-through, voice setup, and exit.
+Transparent Avalonia desktop companion window for macOS. This project is now the compatibility/reference implementation while the native SwiftPM app shell is introduced under `Sources/AthenaNative*`.
 
-Left-click Athena to toggle voice pause mode. Click the small `Chat` bubble to open text pause mode. Click the puppy icon to toggle Athena's autonomous puppy companion. Right-click Athena to open the tray menu.
+Athena walks just above the Dock area, pauses for pose animation, can spawn a small puppy companion, and exposes native menu/tray controls for pause, text chat, click-through, voice setup, music, and exit.
+
+Left-click Athena to toggle voice pause mode. Click the small chat bubble to open text pause mode. Click the puppy icon to toggle Athena's autonomous puppy companion. Right-click Athena to open the context menu.
 
 ## Voice Agent Plan
 
-Voice support is implemented as a first local Realtime pass. Athena ships with no OpenAI API key; users provide their own key during setup, and the app stores it in Windows Credential Manager. Local development can continue to use the `OPENAI_API_KEY` environment variable.
+Voice support is implemented as a Realtime WebSocket pass. Athena ships with no OpenAI API key; users provide their own key during setup, and the app stores it in macOS Keychain on macOS or Windows Credential Manager on Windows. Local development can continue to use the `OPENAI_API_KEY` environment variable.
+
+The current macOS port compiles and runs the app shell, text mode, menu/key storage, screen-capture tool path, and native music playback path. Realtime microphone capture and PCM speaker output are isolated behind platform adapters and still need a native CoreAudio implementation before voice mode can complete a speech roundtrip on macOS.
 
 Athena only listens while she is paused. Walking mode stops microphone capture and closes the Realtime session. See [docs/voice-agent-plan.md](docs/voice-agent-plan.md) for the implementation plan and privacy boundary.
 
@@ -15,21 +19,21 @@ Voice behavior:
 - left-click Athena to pause and start voice mode
 - left-click again to resume walking and stop voice mode
 - right-click for the menu, including voice status, voice selection, and API key setup
-- first voice use asks for an API key if neither Credential Manager nor `OPENAI_API_KEY` has one
-- default voice is `alloy`; selected voice is saved under the user's AppData settings
+- first voice use asks for an API key if neither macOS Keychain nor `OPENAI_API_KEY` has one
+- default voice is `alloy`; selected voice is saved under the user's application-data settings
 
 Pause-only voice tools:
 
 - screen questions such as "what's on my screen?" capture the primary display and ask `gpt-5.5` for a concise spoken answer
 - image requests such as "generate an infographic of what I am seeing" capture the primary display, prepare an image brief with `gpt-5.5`, generate a PNG with `gpt-image-2`, and open it in Athena's lightbox
-- generated screen images are saved under the user's `Pictures\Athena Companion` folder
+- generated screen images are saved under the user's `Pictures/Athena Companion` folder
 - screen capture is only triggered by an explicit voice tool request while Athena is paused
 
 ## Text Chat
 
 Text chat is a separate pause mode from voice:
 
-- click the `Chat` bubble while Athena is walking to pause her and open the text chat window
+- click the chat bubble while Athena is walking to pause her and open the text chat window
 - text mode uses `gpt-5.5` through the Responses API, not the Realtime voice WebSocket
 - text mode has the same local tools as voice mode, including screen inspection and `gpt-image-2` image generation
 - closing the text chat window resumes walking
@@ -40,68 +44,69 @@ Text chat is a separate pause mode from voice:
 Music mode is separate from voice and text:
 
 - open it from Athena's tray menu or by asking Athena to play/open local music
-- the default library folder is `%USERPROFILE%\Music\Athena Companion`
+- the default library folder is `~/Music/Athena Companion`
 - Athena creates the folder on first run and scans it recursively for `.mp3` and `.m4a`
 - if the folder is empty, the player shows the exact folder path and how to populate it
 - entering music mode stops Realtime voice and microphone capture before playback begins
-- playback is always converted to mono AM/SW radio quality with bandwidth limiting, hiss, crackle, and subtle instability
+- macOS playback uses the native `afplay` bridge; the deterministic radio-effect transform remains covered by tests but is not yet in the playback path
 
 ## Puppy Companion
 
-The puppy is a separate transparent click-through WPF window owned by Athena. It is session-only, follows Athena near the taskbar, wanders locally, and shows small bark bubbles without making OpenAI API calls.
+The puppy is a separate transparent click-through Avalonia window. It is session-only, follows Athena near the Dock area, wanders locally, and shows small bark bubbles without making OpenAI API calls.
 
 Puppy assets live at:
 
 ```text
-Assets\Sprites\puppy-atlas.png
-Assets\Sprites\puppy-atlas.json
-Assets\Sprites\puppy-atlas.prompt.txt
-Assets\Icons\puppy-icon.png
+Assets/Sprites/puppy-atlas.png
+Assets/Sprites/puppy-atlas.json
+Assets/Sprites/puppy-atlas.prompt.txt
+Assets/Icons/puppy-icon.png
 ```
 
 Preview GIFs live next to the sprite atlas as `puppy-walk-preview.gif`, `puppy-idle-preview.gif`, and `puppy-bark-preview.gif`.
 
 ## Run
 
-```powershell
-dotnet run --project .\AthenaCompanion.csproj
+```bash
+dotnet run --project ./AthenaCompanion.csproj
 ```
 
 ## Release
 
-Build the self-contained Windows installer locally from the repository root:
+Build the self-contained macOS app locally from the repository root:
 
-```powershell
-.\scripts\build-release.ps1 -Version 0.1.7
+```bash
+./scripts/build-macos.sh 0.1.7
 ```
 
-The installer is written to:
+The app bundle and zip are written to:
 
 ```text
-artifacts\installer\AthenaCompanionSetup-0.1.7.exe
+artifacts/macos/Athena Companion-0.1.7-osx-arm64.app
+artifacts/macos/Athena Companion-0.1.7-osx-arm64.zip
 ```
 
-GitHub Actions also builds the installer when a `v*` tag is pushed:
+GitHub Actions also builds release artifacts when a `v*` tag is pushed:
 
-```powershell
+```bash
 git tag v0.1.7
 git push origin v0.1.7
 ```
 
-The workflow uploads the installer artifact and attaches it to the GitHub release for the tag.
+The workflow uploads the macOS app zip and the existing Windows installer artifact.
 
 ## App Icon
 
 The generated Athena app icon lives at:
 
 ```text
-Assets\Icons\athena.ico
+Assets/Icons/athena.ico
 ```
 
 The `gpt-image-2` source prompt is saved at:
 
 ```text
-Assets\Icons\athena-icon.prompt.txt
+Assets/Icons/athena-icon.prompt.txt
 ```
 
 ## Sprite Atlas
@@ -109,7 +114,7 @@ Assets\Icons\athena-icon.prompt.txt
 The runtime looks for this generated atlas:
 
 ```text
-Assets\Sprites\athena-atlas.png
+Assets/Sprites/athena-atlas.png
 ```
 
 Expected atlas format:
@@ -120,12 +125,12 @@ Expected atlas format:
 - frames 1-15: right-facing walk cycle, curated from every other generated walk frame
 - frames 16-24: idle/pose loop
 - transparent background after chroma-key cleanup
-- metadata: `Assets\Sprites\athena-atlas.json`
+- metadata: `Assets/Sprites/athena-atlas.json`
 
 The exact `gpt-image-2` generation prompt is saved at:
 
 ```text
-Assets\Sprites\athena-atlas.prompt.txt
+Assets/Sprites/athena-atlas.prompt.txt
 ```
 
 Dry-run the image request:

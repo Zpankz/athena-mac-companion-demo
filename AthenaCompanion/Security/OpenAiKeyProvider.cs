@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -10,22 +11,28 @@ internal sealed class OpenAiKeyProvider
 
     public OpenAiKeyLookupResult TryGetApiKey()
     {
-        var savedKey = WindowsCredentialManager.TryRead(CredentialTarget);
-        if (!string.IsNullOrWhiteSpace(savedKey))
-        {
-            return new OpenAiKeyLookupResult(savedKey, OpenAiKeySource.WindowsCredentialManager);
-        }
-
         var environmentKey = Environment.GetEnvironmentVariable("OPENAI_API_KEY");
         if (!string.IsNullOrWhiteSpace(environmentKey))
         {
             return new OpenAiKeyLookupResult(environmentKey, OpenAiKeySource.EnvironmentVariable);
         }
 
+        var savedKey = RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+            ? MacOSKeychain.TryRead(CredentialTarget)
+            : WindowsCredentialManager.TryRead(CredentialTarget);
+        if (!string.IsNullOrWhiteSpace(savedKey))
+        {
+            return new OpenAiKeyLookupResult(savedKey, RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+                ? OpenAiKeySource.MacOSKeychain
+                : OpenAiKeySource.WindowsCredentialManager);
+        }
+
         return new OpenAiKeyLookupResult(null, OpenAiKeySource.None);
     }
 
-    public bool HasSavedCredential() => !string.IsNullOrWhiteSpace(WindowsCredentialManager.TryRead(CredentialTarget));
+    public bool HasSavedCredential() => RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
+        ? !string.IsNullOrWhiteSpace(MacOSKeychain.TryRead(CredentialTarget))
+        : !string.IsNullOrWhiteSpace(WindowsCredentialManager.TryRead(CredentialTarget));
 
     public void SaveApiKey(string apiKey)
     {
@@ -34,13 +41,82 @@ internal sealed class OpenAiKeyProvider
             throw new ArgumentException("API key cannot be empty.", nameof(apiKey));
         }
 
-        WindowsCredentialManager.Write(CredentialTarget, CredentialUserName, apiKey.Trim());
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            MacOSKeychain.Write(CredentialTarget, CredentialUserName, apiKey.Trim());
+        }
+        else
+        {
+            WindowsCredentialManager.Write(CredentialTarget, CredentialUserName, apiKey.Trim());
+        }
     }
 
-    public void DeleteSavedApiKey() => WindowsCredentialManager.Delete(CredentialTarget);
+    public void DeleteSavedApiKey()
+    {
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            MacOSKeychain.Delete(CredentialTarget);
+        }
+        else
+        {
+            WindowsCredentialManager.Delete(CredentialTarget);
+        }
+    }
 }
 
 internal sealed record OpenAiKeyLookupResult(string? ApiKey, OpenAiKeySource Source);
+
+internal static class MacOSKeychain
+{
+    public static string? TryRead(string service)
+    {
+        var result = RunSecurity("find-generic-password", "-s", service, "-w");
+        return result.ExitCode == 0 && !string.IsNullOrWhiteSpace(result.Output)
+            ? result.Output.Trim()
+            : null;
+    }
+
+    public static void Write(string service, string account, string secret)
+    {
+        var result = RunSecurity("add-generic-password", "-U", "-s", service, "-a", account, "-w", secret);
+        if (result.ExitCode != 0)
+        {
+            throw new InvalidOperationException($"Unable to save OpenAI API key in macOS Keychain: {result.Error}");
+        }
+    }
+
+    public static void Delete(string service)
+    {
+        var result = RunSecurity("delete-generic-password", "-s", service);
+        if (result.ExitCode != 0 && !result.Error.Contains("could not be found", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Unable to delete OpenAI API key from macOS Keychain: {result.Error}");
+        }
+    }
+
+    private static CommandResult RunSecurity(params string[] args)
+    {
+        var startInfo = new ProcessStartInfo("/usr/bin/security")
+        {
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            UseShellExecute = false
+        };
+        foreach (var arg in args)
+        {
+            startInfo.ArgumentList.Add(arg);
+        }
+
+        using var process = Process.Start(startInfo) ??
+            throw new InvalidOperationException("Unable to start macOS security command.");
+        var output = process.StandardOutput.ReadToEnd();
+        var error = process.StandardError.ReadToEnd();
+        process.WaitForExit();
+        return new CommandResult(process.ExitCode, output, error);
+    }
+
+    private sealed record CommandResult(int ExitCode, string Output, string Error);
+}
 
 internal static class WindowsCredentialManager
 {
@@ -49,7 +125,8 @@ internal static class WindowsCredentialManager
 
     public static string? TryRead(string target)
     {
-        if (!CredRead(target, CredTypeGeneric, 0, out var credentialPointer))
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ||
+            !CredRead(target, CredTypeGeneric, 0, out var credentialPointer))
         {
             return null;
         }
@@ -74,6 +151,11 @@ internal static class WindowsCredentialManager
 
     public static void Write(string target, string userName, string secret)
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            throw new PlatformNotSupportedException("Windows Credential Manager is only available on Windows.");
+        }
+
         var secretBytes = Encoding.Unicode.GetBytes(secret);
         var blob = Marshal.AllocCoTaskMem(secretBytes.Length);
 
@@ -104,6 +186,11 @@ internal static class WindowsCredentialManager
 
     public static void Delete(string target)
     {
+        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+        {
+            return;
+        }
+
         if (!CredDelete(target, CredTypeGeneric, 0))
         {
             var error = Marshal.GetLastWin32Error();

@@ -1,4 +1,6 @@
 using AthenaCompanion.Music;
+using Avalonia;
+using Avalonia.Threading;
 
 namespace AthenaCompanion.Tools;
 
@@ -63,16 +65,13 @@ internal sealed class AthenaToolExecutor
             var query = ToolArgumentReader.ReadStringArgument(argumentsJson, "query") ?? string.Empty;
             var autoplay = ToolArgumentReader.ReadBoolArgument(argumentsJson, "autoplay") ?? !string.IsNullOrWhiteSpace(query);
             var request = new MusicPlayerRequest(query, autoplay);
-            var dispatcher = System.Windows.Application.Current?.Dispatcher;
-            if (dispatcher is null)
+            if (Application.Current is null)
             {
                 _openMusicPlayer(request);
             }
             else
             {
-                dispatcher.InvokeAsync(
-                    () => _openMusicPlayer(request),
-                    System.Windows.Threading.DispatcherPriority.Background);
+                Dispatcher.UIThread.Post(() => _openMusicPlayer(request), DispatcherPriority.Background);
             }
 
             return AthenaToolResult.StopVoiceWithoutResponse("Opening music mode. Voice mode is stopping while music plays.");
@@ -104,7 +103,14 @@ internal sealed class AthenaToolExecutor
         var client = new OpenAiToolClient(apiKey);
         var result = await client.GenerateScreenInfographicAsync(screenshot, request, cancellationToken);
 
-        System.Windows.Application.Current.Dispatcher.Invoke(() => _showImage(result.ImagePath));
+        if (Application.Current is null)
+        {
+            _showImage(result.ImagePath);
+        }
+        else
+        {
+            Dispatcher.UIThread.Post(() => _showImage(result.ImagePath), DispatcherPriority.Background);
+        }
 
         return AthenaToolResult.Continue($"Done. I created an image from your screen and opened it in a lightbox. Saved image: {result.ImagePath}");
     }
